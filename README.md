@@ -7,7 +7,7 @@ Terminal-first autonomous SOC investigation and response platform.
 ## Read This First
 
 If you want the formal argument for what this repository actually proves about itself, read
-[`docs/soc-agent-correctness-proof.tex`](docs/soc-agent-correctness-proof.tex) first.
+[`proof`](soc_agent.pdf) first.
 
 That document is the mathematical and logical correctness statement for the implemented control
 plane. It proves deterministic planning, dependency-safe scheduling, fail-closed remediation

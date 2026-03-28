@@ -1,0 +1,401 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}{Definition}
+\newtheorem{assumption}{Assumption}
+\newtheorem{remark}{Remark}
+
+\title{Proof of Partial Correctness and Safety Properties of \texttt{soc-agent}}
+\author{Codex}
+\date{March 27, 2026}
+
+\begin{document}
+\maketitle
+
+\section{Statement of Scope}
+This document proves the \emph{partial correctness}, \emph{logical consistency}, and
+\emph{fail-closed safety properties} of the implemented \texttt{soc-agent} control plane.
+It does \emph{not} prove universal empirical detection accuracy against all real-world
+security incidents, because such a claim would require omniscient ground truth over an
+open world with external APIs, incomplete evidence, and non-deterministic model behavior.
+
+\begin{definition}[Control-plane correctness]
+For this document, \texttt{soc-agent} is \emph{control-plane correct} if the following hold:
+\begin{enumerate}[label=(\arabic*)]
+\item the investigation task graph actually executed is a deterministic function of the normalized alert;
+\item the scheduler never executes a task before its dependencies are satisfied;
+\item retries, timeouts, and early-stop behavior are bounded and fail closed;
+\item adapter execution is never attempted on the remediation path unless the explicit policy conditions for execution are satisfied;
+\item persisted memory, correlation, and replay operations preserve the stored incident semantics;
+\item the stated invariants compose without contradiction in \texttt{run\_investigation}.
+\end{enumerate}
+\end{definition}
+
+\section{Assumptions}
+\begin{assumption}[Runtime semantics]
+Python, SQLite/Postgres transactions, JSON parsing, and the filesystem behave according to
+their documented semantics.
+\end{assumption}
+
+\begin{assumption}[Adapter contract]
+External model providers and integration adapters either return values conforming to the
+interfaces used by \texttt{soc-agent} or raise exceptions.
+\end{assumption}
+
+\begin{assumption}[Deduplicated entities on the application path]
+On the main application path, the entity lists written into the memory store are deduplicated.
+This assumption is satisfied by the implemented path
+\[
+\texttt{extract\_entities\_from\_graph} \rightarrow \texttt{MemoryStore.write\_memory},
+\]
+because the extractor accumulates entities in sets and emits sorted unique lists.
+\end{assumption}
+
+\begin{remark}
+Assumption 3 is needed only for the exact baseline-count monotonicity claim. The main safety
+claims do not depend on it.
+\end{remark}
+
+\section{Boundary of What Cannot Be Proved}
+\begin{proposition}[Universal detection accuracy is not provable here]
+No proof from the present source tree can establish that \texttt{soc-agent} is always
+factually accurate about whether an arbitrary real-world alert is malicious, benign, or
+complete in evidentiary coverage.
+\end{proposition}
+
+\begin{proof}
+The system depends on external evidence sources, operator configuration, and language-model
+outputs. Ground-truth maliciousness is not derivable from the code alone. Therefore the
+strong claim ``the system is universally accurate'' is not a theorem of this implementation.
+\end{proof}
+
+\begin{remark}
+This limitation does not weaken the formal proof below. It means only that the provable
+statement must be about implemented semantics and safety, not omniscient real-world truth.
+\end{remark}
+
+\section{Planner and Commander}
+\begin{lemma}[Planner totality and determinism]
+For any input alert object, \texttt{Planner.build\_plan(alert)} returns a finite plan whose
+\texttt{plan\_id}, alert type, objective, task identities, dependencies, retry bounds, and
+timeouts are deterministic functions of the alert fields used by the planner.
+\end{lemma}
+
+\begin{proof}
+The planner normalizes only the alert type and severity, computes a UUIDv5 from a fixed
+namespace string and alert metadata, chooses one of finitely many hard-coded task templates,
+and materializes tasks from that template. No random source, network input, clock value, or
+mutable global state participates. Therefore the output is deterministic. The plan is finite
+because every branch returns a list of exactly five task specifications.
+\end{proof}
+
+\begin{lemma}[Planner-generated dependency graph is acyclic]
+Every plan emitted by \texttt{Planner.build\_plan} is a directed acyclic graph.
+\end{lemma}
+
+\begin{proof}
+Let the canonical order of task roles be
+\[
+(\texttt{recon}, \texttt{threat\_intel}, \texttt{forensics}, \texttt{remediation}, \texttt{reporter}).
+\]
+In every planner branch:
+\begin{enumerate}[label=(\alph*)]
+\item \texttt{recon} has no dependencies;
+\item \texttt{threat\_intel} depends only on \texttt{recon};
+\item \texttt{forensics} depends only on \texttt{recon};
+\item \texttt{remediation} depends only on \texttt{threat\_intel} and \texttt{forensics};
+\item \texttt{reporter} depends only on earlier tasks.
+\end{enumerate}
+Hence every edge points from an earlier position in the above order to a later one. A directed
+cycle would require some edge to point backwards in that order, which never occurs. Therefore
+the graph is acyclic.
+\end{proof}
+
+\begin{lemma}[Commander does not let the LLM choose the task graph]
+The actual executed task graph is independent of the commander's LLM output.
+\end{lemma}
+
+\begin{proof}
+Inside \texttt{Commander.investigate}, the LLM response is parsed into a local variable
+\texttt{plan} used only for logging the objective text. The actual execution path is
+\[
+\texttt{Commander.\_run\_plan(alert, agents\_map)} \rightarrow
+\texttt{self.planner.build\_plan(alert)}.
+\]
+Therefore the scheduled plan topology comes from the deterministic planner, not from the LLM.
+If the LLM call fails or returns invalid JSON, the commander falls back to a fixed local
+dictionary for logging and still invokes the deterministic planner. Hence the executed DAG is
+LLM-independent.
+\end{proof}
+
+\section{Scheduler}
+\begin{lemma}[Dependency safety]
+The scheduler never starts a task unless all of its dependencies are either completed or skipped.
+\end{lemma}
+
+\begin{proof}
+At each iteration the ready set is defined exactly by
+\[
+\texttt{all(dep in completed or dep in skipped for dep in task.dependencies)}.
+\]
+Only tasks in that ready set are passed to \texttt{asyncio.gather} for execution. Therefore a
+task cannot start before every dependency is marked completed or skipped.
+\end{proof}
+
+\begin{lemma}[Blocked propagation]
+If any dependency of a remaining task has status failed or blocked, then that task is marked
+blocked and is not executed.
+\end{lemma}
+
+\begin{proof}
+At the start of every loop, \texttt{\_block\_unreachable\_tasks} scans remaining tasks and checks
+whether any dependency belongs to the failed or blocked sets. Every such task is immediately
+assigned status \texttt{blocked}, written into \texttt{task\_results}, added to the blocked set,
+and removed from the remaining set. Since it is removed before the ready-set computation, it
+cannot be executed afterward.
+\end{proof}
+
+\begin{lemma}[Bounded retries and timeout fail-closed]
+For each task with retry bound \(r\), the scheduler invokes the runner at most \(r+1\) times.
+If the runner exceeds its timeout or raises an exception on all attempts, the task finishes in
+status \texttt{failed}.
+\end{lemma}
+
+\begin{proof}
+The scheduler increments the local counter \texttt{attempts} once per loop of
+\texttt{\_run\_task}. After each failed attempt it checks whether \texttt{attempts > max\_retries}.
+The first time this inequality holds, it returns a failed \texttt{TaskExecutionResult}. Hence
+the number of attempts is at most \(r+1\). Timeout exceptions are caught and converted to a
+failure string; arbitrary exceptions are also caught and stored as the last error. Therefore
+timeout and repeated exception cases fail closed.
+\end{proof}
+
+\begin{lemma}[Early stop is optional-only]
+Early stop can skip only optional tasks, and only after every mandatory non-reporter task has
+completed with average confidence at least the configured threshold, with no failed or blocked
+tasks present.
+\end{lemma}
+
+\begin{proof}
+The predicate \texttt{\_should\_early\_stop} first rejects early stop if any non-optional task
+other than \texttt{reporter} is not completed. It then computes the mandatory confidence and
+rejects early stop when the confidence is undefined or below threshold. It also rejects early
+stop if any task has failed or been blocked. If the predicate is true, the caller marks only
+the currently remaining tasks with \texttt{task.optional = True} as skipped. No mandatory task
+is skipped by this branch.
+\end{proof}
+
+\begin{lemma}[Termination on planner-generated plans]
+For every planner-generated plan, \texttt{Scheduler.run} terminates and returns a finite
+\texttt{ScheduleResult}.
+\end{lemma}
+
+\begin{proof}
+By the acyclicity lemma, every nonempty remaining set contains at least one task whose
+dependencies are satisfied or one task made blocked by failed predecessors. In each outer-loop
+iteration, at least one task is removed from the finite set \texttt{remaining}: either by
+blocking, by execution completion/failure, or by early-stop skipping. Since the initial number
+of tasks is finite, the loop terminates after finitely many removals.
+\end{proof}
+
+\section{Remediation Safety}
+\begin{proposition}[Only well-formed proposals reach the executor]
+The remediation executor is called only for objects that were successfully materialized as
+\texttt{ActionProposal} values.
+\end{proposition}
+
+\begin{proof}
+The remediation agent invokes the executor only inside the loop
+\texttt{for proposal in proposals}. That list is produced only after
+\texttt{validate\_action\_proposals(raw)} returns successfully. If parsing or validation does not
+produce such proposals, the loop body does not run and the executor is not called.
+\end{proof}
+
+\begin{proposition}[Exact authorization condition]
+For an \texttt{ActionExecutionRequest} \(q\), \texttt{ExecutionPolicy.decide(q)} yields
+\texttt{should\_execute = True} if and only if all four conditions hold:
+\begin{enumerate}[label=(\roman*)]
+\item execution policy is enabled;
+\item the action type is allowlisted;
+\item the adapter supports the action type;
+\item the request has \texttt{allow\_execution = True}.
+\end{enumerate}
+\end{proposition}
+
+\begin{proof}
+Inspect the decision tree in \texttt{ExecutionPolicy.decide}. The function returns
+\texttt{should\_execute = False} immediately whenever any one of the four listed conditions is
+false, and returns \texttt{should\_execute = True} only in the final branch reached exactly when
+all four are true. Therefore the condition is necessary and sufficient.
+\end{proof}
+
+\begin{corollary}[No unauthorized remediation execution attempt]
+On the implemented remediation path, no adapter execution is attempted unless the policy is enabled,
+the action is allowlisted, the adapter supports it, and auto-execution was explicitly enabled.
+\end{corollary}
+
+\begin{proof}
+The remediation path is
+\[
+\texttt{RemediationAgent} \rightarrow \texttt{ActionExecutorTool.run} \rightarrow \texttt{adapter.execute}.
+\]
+The tool calls \texttt{adapter.execute} only in the branch where the policy decision has
+\texttt{should\_execute = True}. By the previous proposition, this happens exactly under the four
+authorization conditions. Moreover, if no explicit policy object is supplied, the remediation
+agent constructs one with \texttt{allowed\_actions = ()}, so execution still fails closed by
+default. Hence no unauthorized adapter execution attempt can occur on this path.
+\end{proof}
+
+\begin{remark}
+This is a code-level authorization theorem. It does not assert that an authorized external API
+call must succeed remotely; it asserts that the code does not even attempt adapter execution
+before the authorization predicate is satisfied.
+\end{remark}
+
+\section{Memory, Correlation, and Replay}
+\begin{lemma}[At most one stored memory per run identifier]
+The memory store contains at most one \texttt{IncidentMemory} row per \texttt{run\_id}.
+\end{lemma}
+
+\begin{proof}
+The \texttt{incident\_memory} schema declares \texttt{run\_id} unique. The write path performs an
+\texttt{INSERT ... ON CONFLICT(run\_id) DO UPDATE}. Therefore distinct rows with the same
+\texttt{run\_id} cannot coexist.
+\end{proof}
+
+\begin{lemma}[Successful memory write is post-checked]
+If \texttt{MemoryStore.write\_memory} returns normally with value \(m\), then \(m\) is retrievable
+from the store by its \texttt{run\_id}.
+\end{lemma}
+
+\begin{proof}
+After issuing the insert or upsert, \texttt{write\_memory} immediately calls
+\texttt{get\_memory\_by\_run\_id(record.run\_id)}. If that query returns \texttt{None}, the method
+raises \texttt{RuntimeError}. Therefore any normal return is accompanied by a successful
+postcondition check.
+\end{proof}
+
+\begin{lemma}[Baseline monotonicity on the application path]
+Under Assumption 3, each completed application-path memory write increments the observed
+baseline count by exactly one for each unique extracted entity in that memory.
+\end{lemma}
+
+\begin{proof}
+The application path obtains entities from \texttt{extract\_entities\_from\_graph}, which emits
+unique lists. Then \texttt{MemoryStore.\_update\_baselines} iterates over each entity value once
+and either inserts a new observed baseline with incident count \(1\) or updates the existing row
+by adding \(1\). Because no duplicate entity value appears within a bucket on the application
+path, the increment occurs exactly once per unique extracted entity.
+\end{proof}
+
+\begin{lemma}[Correlation returns only matching prior context]
+Every incident returned by \texttt{CorrelationService.get\_prior\_context} matches at least one
+entity extracted from the queried alert, and no run identifier is returned twice.
+\end{lemma}
+
+\begin{proof}
+For each extracted entity bucket, the correlation service queries
+\texttt{list\_memories\_for\_entity(canonical\_type, value)}. That store method includes a memory
+only if the queried value appears in one of the stored entity lists under the same canonical
+entity type. The correlation service tracks a \texttt{seen\_runs} set and skips any memory whose
+\texttt{run\_id} has already been emitted. Therefore every returned incident matches at least one
+queried entity and duplicate runs are eliminated.
+\end{proof}
+
+\begin{lemma}[Replay preserves stored alert semantics]
+If a run identifier exists in memory, \texttt{replay\_investigation(run\_id, ...)} reconstructs
+the stored alert from \texttt{alert\_json} and passes that reconstructed alert to
+\texttt{run\_investigation}.
+\end{lemma}
+
+\begin{proof}
+\texttt{replay\_investigation} first retrieves the memory by \texttt{run\_id}. It then calls
+\texttt{\_reconstruct\_alert(memory.alert\_json)} and passes the resulting alert object directly to
+\texttt{run\_investigation}. If the run identifier is missing, it raises \texttt{ValueError}
+instead of inventing a replacement alert. Therefore replay preserves the persisted alert
+semantics or fails explicitly.
+\end{proof}
+
+\section{Main Theorem}
+\begin{theorem}[Implemented control-plane correctness of \texttt{soc-agent}]
+Under Assumptions 1--3, for every call to
+\[
+\texttt{run\_investigation(config, alert, dry\_run, ...)}
+\]
+that returns normally, the following statements are true:
+\begin{enumerate}[label=(\arabic*)]
+\item the task DAG actually executed is a deterministic function of the input alert and not of
+      the commander's LLM output;
+\item every task executed by the scheduler begins only after its dependencies are completed or
+      skipped;
+\item the scheduler terminates in finitely many steps on the planner-generated plan and assigns
+      each scheduled task exactly one final result among completed, failed, blocked, or skipped;
+\item adapter execution is attempted on the remediation path if and only if the explicit
+      authorization conditions of the execution policy are satisfied;
+\item if memory is enabled, every normal return from \texttt{write\_memory} implies that the run's
+      incident memory is persisted and retrievable by \texttt{run\_id};
+\item if a replay is later requested for that persisted \texttt{run\_id}, the replay path
+      reconstructs the stored alert semantics instead of manufacturing a different alert.
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+Item (1) follows from the planner determinism lemma and the commander LLM-independence lemma.
+Item (2) follows from the scheduler dependency-safety lemma. Item (3) follows from the blocked
+propagation, bounded-retry, early-stop, and termination lemmas. Item (4) follows from the exact
+authorization proposition and its corollary. Item (5) follows from the memory post-check lemma.
+Item (6) follows from the replay lemma. The statements are composable because the application
+pipeline wires these subsystems in series without any contradictory branch that bypasses the
+proved guards. Therefore the theorem holds.
+\end{proof}
+
+\section{Empirical Validation of the Proof Obligations}
+The proofs above are deductive. The current workspace also provides empirical validation that the
+implemented code conforms to the proved obligations.
+
+On March 27, 2026, the command
+\[
+\texttt{pytest soc-agent/tests -q}
+\]
+completed with
+\[
+\texttt{225 passed,\ 8 skipped}.
+\]
+
+The passing tests include, among others:
+\begin{enumerate}[label=(\arabic*)]
+\item planner determinism and expected DAG structure;
+\item scheduler concurrency, retry bounds, timeout handling, and optional-only early stop;
+\item execution-policy gating and adapter routing;
+\item memory-store persistence, baseline updates, and correlation behavior;
+\item entity extraction and replay reconstruction;
+\item approval identity, approval queue, worker queue, and application-level investigation flow.
+\end{enumerate}
+
+\begin{remark}
+The tests do not replace the proof. They provide implementation evidence that the source under
+inspection matches the logical properties proved above.
+\end{remark}
+
+\section{Conclusion}
+The strongest defensible statement is the following:
+
+\begin{quote}
+\texttt{soc-agent} is mathematically and logically correct with respect to its implemented
+control-plane semantics: deterministic planning, dependency-safe scheduling, bounded failure
+behavior, fail-closed remediation authorization, persistent incident memory, correlation, and replay.
+What is \emph{not} proved is universal empirical threat-detection accuracy over arbitrary
+real-world incidents.
+\end{quote}
+
+That statement is both rigorous and true for the code inspected here.
+
+\end{document}

@@ -1,0 +1,22 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Local runtime outputs
+reports/
+alerts/incoming/processed/
+
+# Local databases and SQLite journal files
+*.db
+*.db-shm
+*.db-wal
+
+# OS/editor noise
+.DS_Store

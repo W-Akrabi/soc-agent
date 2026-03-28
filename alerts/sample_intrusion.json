@@ -1,0 +1,26 @@
+{
+  "type": "intrusion",
+  "severity": "high",
+  "source_ip": "185.220.101.45",
+  "dest_ip": "10.0.1.50",
+  "source_port": 49200,
+  "dest_port": 8080,
+  "hostname": "web-prod-01",
+  "process": "nginx",
+  "user_account": "www-data",
+  "tags": ["external-ip", "web-server"],
+  "raw_payload": {
+    "rule_name": "EXPLOIT_ATTEMPT_CVE_2024_1337",
+    "signature": "HTTP exploit payload detected",
+    "bytes_in": 4096,
+    "bytes_out": 512,
+    "log_source": "suricata",
+    "logs": [
+      {"ts": "2026-03-26T03:12:01Z", "event": "connection_established", "src": "185.220.101.45", "dst": "10.0.1.50:8080"},
+      {"ts": "2026-03-26T03:12:03Z", "event": "exploit_payload_sent", "payload_size": 4096},
+      {"ts": "2026-03-26T03:12:05Z", "event": "shell_spawned", "process": "sh", "parent": "nginx"},
+      {"ts": "2026-03-26T03:14:10Z", "event": "privilege_escalation", "user": "root"},
+      {"ts": "2026-03-26T03:19:22Z", "event": "data_staged", "path": "/tmp/.exfil", "bytes": 52428}
+    ]
+  }
+}

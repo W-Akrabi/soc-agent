@@ -1,0 +1,22 @@
+{
+  "type": "brute_force",
+  "severity": "medium",
+  "source_ip": "203.0.113.99",
+  "dest_ip": "10.0.0.10",
+  "source_port": 0,
+  "dest_port": 22,
+  "hostname": "bastion-01",
+  "user_account": "admin",
+  "tags": ["ssh", "authentication-failure"],
+  "raw_payload": {
+    "rule_name": "SSH_BRUTE_FORCE",
+    "attempt_count": 247,
+    "window_seconds": 60,
+    "log_source": "sshd",
+    "logs": [
+      {"ts": "2026-03-26T01:00:00Z", "event": "auth_failure", "user": "admin", "src": "203.0.113.99"},
+      {"ts": "2026-03-26T01:00:01Z", "event": "auth_failure", "user": "admin", "src": "203.0.113.99"},
+      {"ts": "2026-03-26T01:01:00Z", "event": "auth_failure", "user": "root", "src": "203.0.113.99"}
+    ]
+  }
+}

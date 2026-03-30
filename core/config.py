@@ -31,7 +31,7 @@ class Config:
     provider: str = "anthropic"
     openai_api_key: str = ""
     openai_base_url: str | None = None
-    ollama_base_url: str = "http://localhost:11434"
+    ollama_base_url: str = "http://127.0.0.1:11434"
     storage_backend: str = "sqlite"
     postgres_dsn: str | None = None
     postgres_schema: str = "public"
@@ -87,7 +87,7 @@ class Config:
             provider=provider,
             openai_api_key=openai_key,
             openai_base_url=os.getenv("OPENAI_BASE_URL") or None,
-            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
+            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
             storage_backend=os.getenv("SOC_STORAGE_BACKEND", "sqlite").strip().lower() or "sqlite",
             postgres_dsn=os.getenv("SOC_POSTGRES_DSN") or None,
             postgres_schema=os.getenv("SOC_POSTGRES_SCHEMA", "public"),

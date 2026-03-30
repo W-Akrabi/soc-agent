@@ -33,8 +33,10 @@ async def test_intrusion_response_is_non_empty_and_keeps_existing_spirit():
     )
 
     assert response
-    assert "Tor exit node" in response
-    assert "8080" in response
+    assert response.text
+    assert response.tool_calls == []
+    assert "Tor exit node" in response.text
+    assert "8080" in response.text
 
 
 @pytest.mark.asyncio
@@ -47,10 +49,10 @@ async def test_brute_force_response_is_context_aware():
         messages=[{"role": "user", "content": "investigate"}],
     )
 
-    lower = response.lower()
+    lower = response.text.lower()
     assert response
     assert "brute" in lower or "credential" in lower or "ssh" in lower
-    assert "203.0.113.99" in response or "bastion-01" in response
+    assert "203.0.113.99" in response.text or "bastion-01" in response.text
 
 
 @pytest.mark.asyncio
@@ -64,8 +66,8 @@ async def test_malware_response_mentions_malware():
     )
 
     assert response
-    assert "Incident Report" in response
-    assert "malware" in response.lower()
+    assert "Incident Report" in response.text
+    assert "malware" in response.text.lower()
 
 
 @pytest.mark.asyncio
@@ -83,6 +85,7 @@ async def test_same_alert_type_is_deterministic():
     )
 
     assert first == second
+    assert first.text == second.text
 
 
 @pytest.mark.asyncio
@@ -94,7 +97,7 @@ async def test_without_context_still_works():
     )
 
     assert response
-    assert "objective" in response.lower()
+    assert "objective" in response.text.lower()
 
 
 @pytest.mark.asyncio
@@ -108,5 +111,5 @@ async def test_reporter_with_string_context_does_not_raise():
         messages=[{"role": "user", "content": "Investigation data:\n{}"}],
     )
 
-    assert "Incident Report" in response
-    assert "malware" in response.lower()
+    assert "Incident Report" in response.text
+    assert "malware" in response.text.lower()

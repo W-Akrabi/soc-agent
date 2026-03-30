@@ -11,6 +11,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 SUBCOMMANDS = {"investigate", "watch", "recall", "replay", "approve", "reject", "rollback", "worker", "api"}
+HELP_FLAGS = {"-h", "--help"}
+HELP_EPILOG = """Legacy entry points still work:
+  python3 main.py --alert simulated --dry-run
+  python3 main.py --watch alerts/incoming --dry-run
+"""
 
 
 class ApproverAuthorizationError(Exception):
@@ -19,6 +24,10 @@ class ApproverAuthorizationError(Exception):
 
 def main(argv: list[str] | None = None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        return _main_subcommands(["--help"])
+    if argv[0] in HELP_FLAGS:
+        return _main_subcommands(argv)
     if argv and argv[0] in SUBCOMMANDS:
         return _main_subcommands(argv)
     return _main_legacy(argv)
@@ -61,7 +70,9 @@ def _main_legacy(argv: list[str]) -> None:
 
 def _main_subcommands(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
-        description="SOC Agent — autonomous multi-agent security incident investigation"
+        description="SOC Agent — autonomous multi-agent security incident investigation",
+        epilog=HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 

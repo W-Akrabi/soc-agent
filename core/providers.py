@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from core.config import Config
+from core.llm_response import LLMResponse
 
 __path__ = [str(Path(__file__).with_name("providers"))]
 
@@ -19,7 +20,7 @@ class ModelProvider(Protocol):
         messages: list[dict],
         tools: list[dict] | None = None,
         max_tokens: int = 4096,
-    ) -> str: ...
+    ) -> LLMResponse: ...
 
     def attach_event_log(self, event_log) -> None: ...
 
@@ -45,7 +46,7 @@ def build_provider(config: Config) -> ModelProvider:
 
         return OllamaProvider(
             model=config.model,
-            base_url=config.ollama_base_url or "http://localhost:11434",
+            base_url=config.ollama_base_url or "http://127.0.0.1:11434",
         )
 
     raise ValueError(f"Unsupported model provider: {config.provider!r}")

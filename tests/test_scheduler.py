@@ -114,7 +114,7 @@ async def test_scheduler_retries_failures_and_emits_retry_event():
 
 
 @pytest.mark.asyncio
-async def test_scheduler_applies_timeout_override_and_fails_closed():
+async def test_scheduler_does_not_shorten_below_default_timeout():
     task = PlannedTask(
         task_id="recon",
         agent_name="recon",
@@ -131,9 +131,8 @@ async def test_scheduler_applies_timeout_override_and_fails_closed():
 
     result = await scheduler.run(plan, {"recon": runner})
 
-    assert result.task_results[0].status == "failed"
-    assert result.task_results[0].attempts == 2
-    assert "timed out" in result.task_results[0].error
+    assert result.task_results[0].status == "completed"
+    assert result.task_results[0].attempts == 1
 
 
 @pytest.mark.asyncio
@@ -184,3 +183,42 @@ async def test_scheduler_early_stop_skips_optional_tasks_only_after_mandatory_co
     assert result.early_stopped is True
     assert "remediation" not in called
     assert any(entry["event_type"] == "early_stop_triggered" for entry in events.entries)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_runs_soft_dependency_task_after_failed_dependency():
+    recon = PlannedTask(task_id="recon", agent_name="recon", objective="recon")
+    intel = PlannedTask(task_id="intel", agent_name="threat_intel", objective="intel", dependencies=["recon"])
+    forensics = PlannedTask(task_id="forensics", agent_name="forensics", objective="forensics", dependencies=["recon"])
+    remediation = PlannedTask(
+        task_id="remediation",
+        agent_name="remediation",
+        objective="remediation",
+        dependencies=["recon"],
+        soft_dependencies=["intel", "forensics"],
+    )
+    plan = plan_with_tasks(recon, intel, forensics, remediation, threshold=None)
+    scheduler = Scheduler(default_timeout=1.0)
+
+    called = []
+
+    async def runner(task):
+        called.append(task.task_id)
+        if task.task_id == "forensics":
+            raise RuntimeError("timeline unavailable")
+        return {"confidence": 0.9}
+
+    result = await scheduler.run(
+        plan,
+        {
+            "recon": runner,
+            "threat_intel": runner,
+            "forensics": runner,
+            "remediation": runner,
+        },
+    )
+
+    statuses = {task.task_id: task.status for task in result.task_results}
+    assert statuses["forensics"] == "failed"
+    assert statuses["remediation"] == "completed"
+    assert called[-1] == "remediation"

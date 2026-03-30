@@ -79,11 +79,12 @@ class ReporterAgent(AgentBase):
                 summary["failed_tasks"].append(node["label"])
 
         context = json.dumps(summary, indent=2)
-        report_text = await self.llm.call(
+        report_response = await self.llm.call(
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": f"Investigation data:\n{context}"}],
             max_tokens=8192,
         )
+        report_text = report_response.text if hasattr(report_response, "text") else str(report_response)
 
         Path(self.reports_dir).mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H-%M")

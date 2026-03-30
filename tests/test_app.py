@@ -37,7 +37,7 @@ def _make_config(tmp_path) -> Config:
         provider="anthropic",
         openai_api_key="",
         openai_base_url=None,
-        ollama_base_url="http://localhost:11434",
+        ollama_base_url="http://127.0.0.1:11434",
         storage_backend="sqlite",
         postgres_dsn=None,
         postgres_schema="public",

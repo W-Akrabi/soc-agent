@@ -13,7 +13,11 @@ For each action return a JSON array. Each item must have:
   reason: why this action is needed
   urgency: immediate | within_24h | scheduled
 
-Respond ONLY with a valid JSON array. No other text."""
+Respond ONLY with a valid JSON array. No other text.
+
+If a proposed action depends on live host state you don't have (for example confirming a process
+is still running), use dispatch_agent to request recon with the specific query before
+proposing the action. Only dispatch when an action depends on data you are missing."""
 
 
 class RemediationAgent(AgentBase):
@@ -60,7 +64,10 @@ class RemediationAgent(AgentBase):
             "timeline": [t["data"] for t in timeline],
         }, indent=2)
 
-        raw = await self.llm.call(system=SYSTEM_PROMPT, messages=[{"role": "user", "content": context}])
+        raw = await self._llm_call_with_dispatch(
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": context}],
+        )
 
         try:
             proposals = validate_action_proposals(raw)
@@ -96,6 +103,13 @@ class RemediationAgent(AgentBase):
             self.log(
                 f"[{action_status.upper()}] {action.get('action_type')} → "
                 f"{action.get('target')} ({action.get('urgency')})"
+            )
+        if self.dispatch_context is not None:
+            self.graph.write_node(
+                type="finding",
+                label=f"dispatch-summary:remediation:{task_node_id}",
+                data={"summary": raw},
+                created_by=self.name,
             )
 
     def _status_from_result(self, status: str) -> str:

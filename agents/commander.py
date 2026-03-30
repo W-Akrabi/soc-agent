@@ -3,6 +3,7 @@ import json
 from datetime import datetime, timezone
 from rich.console import Console
 from core.correlation import CorrelationService
+from core.dispatch import DispatchContext
 from core.execution_policy import ExecutionPolicy
 from core.models import Alert, TaskStatus
 from core.planner import Planner
@@ -65,6 +66,8 @@ class Commander:
 
     async def investigate(self, alert: Alert) -> None:
         """Run the full investigation pipeline."""
+        self._current_alert = alert
+        self._root_dispatch_ctx = DispatchContext()
         start = datetime.now(timezone.utc)
 
         severity_color = {"low": "green", "medium": "yellow", "high": "red", "critical": "bold red"}.get(alert.severity.value, "white")
@@ -96,7 +99,8 @@ class Commander:
                 prompt = f"{SYSTEM_PROMPT}\n\n{prior_context.format_for_prompt(limit=self.memory_context_limit)}"
 
         try:
-            raw = await self.llm.call(system=prompt, messages=[{"role": "user", "content": alert_summary}])
+            response = await self.llm.call(system=prompt, messages=[{"role": "user", "content": alert_summary}])
+            raw = response.text if hasattr(response, "text") else str(response)
             plan = json.loads(raw)
         except Exception:
             plan = {"objective": f"Investigate {alert.type.value} alert", "priority_agents": ["recon", "threat_intel", "forensics"]}
@@ -112,14 +116,11 @@ class Commander:
             )
         except asyncio.TimeoutError:
             self.log(f"Overall investigation timeout ({self.commander_timeout}s). Running reporter with available data.", style="red")
-            reporter_task_id = self.graph.write_node(
-                "task",
-                "reporter-task",
-                {"agent": "reporter"},
-                self.name,
-                status=TaskStatus.QUEUED.value,
-            )
-            await agents_map["reporter"].run(reporter_task_id, alert)
+            await self._run_fallback_reporter(agents_map, alert)
+        else:
+            if not self._reporter_completed():
+                self.log("Planned reporter did not complete. Running reporter with available data.", style="yellow")
+                await self._run_fallback_reporter(agents_map, alert)
 
         elapsed = (datetime.now(timezone.utc) - start).seconds
         self.log(f"Investigation complete in {elapsed}s")
@@ -147,6 +148,7 @@ class Commander:
                     "agent": planned_task.agent_name,
                     "objective": planned_task.objective,
                     "dependencies": planned_task.dependencies,
+                    "soft_dependencies": planned_task.soft_dependencies,
                     "optional": planned_task.optional,
                 },
                 self.name,
@@ -170,6 +172,7 @@ class Commander:
                     "agent": planned_task.agent_name,
                     "objective": planned_task.objective,
                     "dependencies": planned_task.dependencies,
+                    "soft_dependencies": planned_task.soft_dependencies,
                     "optional": planned_task.optional,
                 },
                 self.name,
@@ -219,7 +222,16 @@ class Commander:
         registry = self.integration_registry if self.integration_registry is not None else IntegrationRegistry()
         has_registry = self.integration_registry is not None
 
-        kwargs = dict(case_graph=self.graph, llm=self.llm, console=self.console, agent_timeout=self.agent_timeout)
+        ctx = getattr(self, "_root_dispatch_ctx", None)
+        dispatch_fn = self.run_sub_task if ctx is not None else None
+        kwargs = dict(
+            case_graph=self.graph,
+            llm=self.llm,
+            console=self.console,
+            agent_timeout=self.agent_timeout,
+            dispatch_context=ctx,
+            dispatch_fn=dispatch_fn,
+        )
         threat_adapter = registry.adapters.get("threat_intel") if has_registry else None
         entra_adapter = registry.adapters.get("entra") if has_registry else None
         defender_adapter = registry.adapters.get("defender") if has_registry else None
@@ -249,6 +261,105 @@ class Commander:
         for agent in agents_map.values():
             agent.attach_event_log(self.event_log)
         return agents_map
+
+    def _reporter_completed(self) -> bool:
+        for node in self.graph.get_nodes_by_type("task"):
+            data = node.get("data") or {}
+            if data.get("agent") == "reporter" and node.get("status") == TaskStatus.COMPLETED.value:
+                return True
+        return False
+
+    async def _run_fallback_reporter(self, agents_map: dict, alert: Alert) -> None:
+        reporter_task_id = self.graph.write_node(
+            "task",
+            "reporter-task",
+            {"agent": "reporter"},
+            self.name,
+            status=TaskStatus.QUEUED.value,
+        )
+        await agents_map["reporter"].run(reporter_task_id, alert)
+
+    def _agent_timeout_for(self, agent_name: str) -> int:
+        return max(10, self.agent_timeout // 2)
+
+    def _build_single_agent(self, agent_name: str, ctx: DispatchContext, timeout: int):
+        registry = self.integration_registry or IntegrationRegistry()
+        has_registry = self.integration_registry is not None
+        base_kwargs = dict(
+            case_graph=self.graph,
+            llm=self.llm,
+            console=self.console,
+            agent_timeout=timeout,
+            dispatch_context=ctx,
+            dispatch_fn=self.run_sub_task,
+        )
+        if agent_name == "recon":
+            return ReconAgent(**base_kwargs, integration_registry=registry if has_registry else None)
+        if agent_name == "threat_intel":
+            return ThreatIntelAgent(
+                **base_kwargs,
+                threat_adapter=registry.adapters.get("threat_intel") if has_registry else None,
+                use_env_adapter=not has_registry,
+            )
+        if agent_name == "forensics":
+            return ForensicsAgent(
+                **base_kwargs,
+                entra_adapter=registry.adapters.get("entra") if has_registry else None,
+                use_env_adapter=not has_registry,
+            )
+        if agent_name == "remediation":
+            return RemediationAgent(
+                **base_kwargs,
+                auto_remediate=self.auto_remediate,
+                execution_policy=self.execution_policy,
+                defender_adapter=registry.adapters.get("defender") if has_registry else None,
+                entra_adapter=registry.adapters.get("entra") if has_registry else None,
+                approval_queue=self.approval_queue,
+            )
+        raise ValueError(f"Unknown dispatchable agent: {agent_name}")
+
+    def _read_latest_findings(self, agent_name: str, task_node_id: str) -> str:
+        label = f"dispatch-summary:{agent_name}:{task_node_id}"
+        nodes = self.graph.get_nodes_by_type("finding")
+        match = next((node for node in nodes if node.get("label") == label), None)
+        if match is None:
+            return f"No findings returned by dispatched {agent_name} agent."
+        return match.get("data", {}).get("summary", "No summary available.")
+
+    async def run_sub_task(
+        self,
+        agent_name: str,
+        objective: str,
+        context: dict,
+        dispatch_context: DispatchContext,
+    ) -> str:
+        await dispatch_context._counter.increment()
+
+        if self.event_log is not None:
+            self.event_log.append(
+                "agent_dispatch",
+                agent=agent_name,
+                data={
+                    "objective": objective,
+                    "context": context,
+                    "depth": dispatch_context.depth,
+                    "sub_task_count": dispatch_context._counter.value,
+                },
+            )
+
+        task_node_id = self.graph.write_node(
+            type="task",
+            label=f"dispatch:{agent_name}:{dispatch_context.depth}",
+            data={"agent": agent_name, "objective": objective, "dispatched": True},
+            created_by="dispatch",
+        )
+
+        child_ctx = dispatch_context.child(agent_name)
+        sub_timeout = self._agent_timeout_for(agent_name)
+        agent = self._build_single_agent(agent_name, child_ctx, sub_timeout)
+        agent.attach_event_log(self.event_log)
+        await agent.run(task_node_id, self._current_alert)
+        return self._read_latest_findings(agent_name, task_node_id)
 
     def _serialize_alert(self, alert: Alert) -> str:
         return json.dumps(

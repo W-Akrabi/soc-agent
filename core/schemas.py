@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 import json
+import re
 import uuid
 
 from core.models import ActionStatus, TaskStatus
@@ -116,6 +117,7 @@ class PlannedTask:
     agent_name: str
     objective: str
     dependencies: list[str] = field(default_factory=list)
+    soft_dependencies: list[str] = field(default_factory=list)
     optional: bool = False
     max_retries: int = 0
     timeout_override: int | None = None
@@ -259,30 +261,137 @@ class WorkerState:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def _extract_json_payload(raw_json: str) -> Any:
+    text = (raw_json or "").strip()
+    if not text:
+        raise ValueError("Action proposals JSON is invalid: empty response")
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        pass
+
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidate = fenced.group(1).strip()
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char not in "[{":
+            continue
+        try:
+            payload, _ = decoder.raw_decode(text[index:])
+            return payload
+        except json.JSONDecodeError:
+            continue
+
+    raise ValueError("Action proposals JSON is invalid: unable to locate JSON payload")
+
+
+def _coerce_action_items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("actions", "proposals", "items", "results"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        if any(key in payload for key in ("action_type", "action", "type", "target")):
+            return [payload]
+    raise ValueError(f"Expected a JSON array, got {type(payload).__name__}")
+
+
+def _first_non_empty_string(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                return normalized
+    return None
+
+
+def _normalize_urgency(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized in {"immediate", "urgent", "critical", "asap", "now"}:
+        return "immediate"
+    if normalized in {"within_24h", "24h", "within24h", "today", "soon"}:
+        return "within_24h"
+    if normalized in {"scheduled", "later", "planned", "routine"}:
+        return "scheduled"
+    return "scheduled"
+
+
+def _default_reason(action_type: str, target: str) -> str:
+    return f"Model proposed {action_type} for {target} without an explicit reason."
+
+
+def _normalize_action_item(item: dict[str, Any]) -> dict[str, str] | None:
+    action_type = _first_non_empty_string(
+        item.get("action_type"),
+        item.get("action"),
+        item.get("type"),
+        item.get("name"),
+    )
+    target = _first_non_empty_string(
+        item.get("target"),
+        item.get("host"),
+        item.get("hostname"),
+        item.get("ip"),
+        item.get("address"),
+        item.get("account"),
+        item.get("user"),
+        item.get("entity"),
+    )
+    if not action_type or not target:
+        return None
+
+    reason = _first_non_empty_string(
+        item.get("reason"),
+        item.get("rationale"),
+        item.get("description"),
+        item.get("details"),
+        item.get("why"),
+    ) or _default_reason(action_type, target)
+    urgency = _normalize_urgency(
+        _first_non_empty_string(item.get("urgency"), item.get("priority"), item.get("severity"))
+    )
+
+    return {
+        "action_type": action_type,
+        "target": target,
+        "reason": reason,
+        "urgency": urgency,
+    }
+
+
 def validate_action_proposals(raw_json: str) -> list[ActionProposal]:
     """Parse and validate LLM action proposals before any execution path."""
-    try:
-        items = json.loads(raw_json)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Action proposals JSON is invalid: {e}") from e
+    payload = _extract_json_payload(raw_json)
+    items = _coerce_action_items(payload)
 
-    if not isinstance(items, list):
-        raise ValueError(f"Expected a JSON array, got {type(items).__name__}")
+    if not items:
+        raise ValueError("Expected a JSON array, got empty or unsupported payload")
 
     proposals: list[ActionProposal] = []
-    for index, item in enumerate(items):
-        for field in ("action_type", "target", "reason", "urgency"):
-            if field not in item:
-                raise ValueError(
-                    f"Action proposal[{index}] missing required field '{field}'"
-                )
+    for item in items:
+        normalized = _normalize_action_item(item)
+        if normalized is None:
+            continue
         proposals.append(
             ActionProposal(
                 action_id=str(uuid.uuid4()),
-                action_type=item["action_type"],
-                target=item["target"],
-                reason=item["reason"],
-                urgency=item["urgency"],
+                action_type=normalized["action_type"],
+                target=normalized["target"],
+                reason=normalized["reason"],
+                urgency=normalized["urgency"],
             )
         )
+
+    if not proposals:
+        raise ValueError("No valid action proposals could be recovered from model output")
+
     return proposals

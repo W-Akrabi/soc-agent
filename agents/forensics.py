@@ -15,7 +15,11 @@ from tools.log_parser import LogParserTool
 SYSTEM_PROMPT = """You are a Digital Forensics Investigator in a SOC investigation.
 Given the alert payload and parsed logs, reconstruct the attack timeline.
 Identify: initial access vector, lateral movement, persistence, data touched.
-List the timeline events in chronological order. Be specific about timestamps."""
+List the timeline events in chronological order. Be specific about timestamps.
+
+If timeline reconstruction reveals an unknown external IP or domain not already in the
+case graph, use dispatch_agent to request recon or threat_intel analysis with that
+specific indicator. Only dispatch when the timeline surfaces a new IOC."""
 
 
 class ForensicsAgent(AgentBase):
@@ -76,7 +80,10 @@ class ForensicsAgent(AgentBase):
         if entra_errors:
             context_parts.append(f"Entra collection warnings: {json.dumps(entra_errors)}")
         context = "\n\n".join(context_parts)
-        analysis = await self.llm.call(system=SYSTEM_PROMPT, messages=[{"role": "user", "content": context}])
+        analysis = await self._llm_call_with_dispatch(
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": context}],
+        )
 
         self.graph.write_node(
             type="timeline_event",
@@ -90,6 +97,13 @@ class ForensicsAgent(AgentBase):
             },
             created_by=self.name
         )
+        if self.dispatch_context is not None:
+            self.graph.write_node(
+                type="finding",
+                label=f"dispatch-summary:forensics:{task_node_id}",
+                data={"summary": analysis},
+                created_by=self.name,
+            )
         self.log(f"Reconstructed {len(timeline_items)} events")
         self.log(analysis[:120] + "..." if len(analysis) > 120 else analysis)
 

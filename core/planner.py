@@ -11,6 +11,7 @@ from core.schemas import InvestigationPlan, PlannedTask
 class _TaskSpec:
     agent_name: str
     depends_on: tuple[str, ...] = ()
+    soft_depends_on: tuple[str, ...] = ()
     optional: bool = False
     max_retries: int = 0
     timeout_override: int | None = None
@@ -56,7 +57,8 @@ class Planner:
                     _TaskSpec("forensics", depends_on=("recon",), timeout_override=90),
                     _TaskSpec(
                         "remediation",
-                        depends_on=("threat_intel", "forensics"),
+                        depends_on=("recon",),
+                        soft_depends_on=("threat_intel", "forensics"),
                         optional=remediation_optional,
                         timeout_override=60,
                     ),
@@ -75,7 +77,12 @@ class Planner:
                     _TaskSpec("recon", timeout_override=60, max_retries=1),
                     _TaskSpec("threat_intel", depends_on=("recon",), timeout_override=90, max_retries=1),
                     _TaskSpec("forensics", depends_on=("recon",), timeout_override=90),
-                    _TaskSpec("remediation", depends_on=("threat_intel", "forensics"), timeout_override=60),
+                    _TaskSpec(
+                        "remediation",
+                        depends_on=("recon",),
+                        soft_depends_on=("threat_intel", "forensics"),
+                        timeout_override=60,
+                    ),
                     _TaskSpec(
                         "reporter",
                         depends_on=("recon", "threat_intel", "forensics", "remediation"),
@@ -93,7 +100,8 @@ class Planner:
                     _TaskSpec("forensics", depends_on=("recon",), timeout_override=75),
                     _TaskSpec(
                         "remediation",
-                        depends_on=("threat_intel", "forensics"),
+                        depends_on=("recon",),
+                        soft_depends_on=("threat_intel", "forensics"),
                         optional=True,
                         timeout_override=60,
                     ),
@@ -112,7 +120,12 @@ class Planner:
                     _TaskSpec("recon", timeout_override=60, max_retries=1),
                     _TaskSpec("threat_intel", depends_on=("recon",), timeout_override=90, max_retries=1),
                     _TaskSpec("forensics", depends_on=("recon",), timeout_override=90),
-                    _TaskSpec("remediation", depends_on=("threat_intel", "forensics"), timeout_override=60),
+                    _TaskSpec(
+                        "remediation",
+                        depends_on=("recon",),
+                        soft_depends_on=("threat_intel", "forensics"),
+                        timeout_override=60,
+                    ),
                     _TaskSpec(
                         "reporter",
                         depends_on=("recon", "threat_intel", "forensics", "remediation"),
@@ -130,7 +143,8 @@ class Planner:
                     _TaskSpec("forensics", depends_on=("recon",), timeout_override=75),
                     _TaskSpec(
                         "remediation",
-                        depends_on=("threat_intel", "forensics"),
+                        depends_on=("recon",),
+                        soft_depends_on=("threat_intel", "forensics"),
                         optional=True,
                         timeout_override=60,
                     ),
@@ -150,7 +164,8 @@ class Planner:
                 _TaskSpec("forensics", depends_on=("recon",), timeout_override=75),
                 _TaskSpec(
                     "remediation",
-                    depends_on=("threat_intel", "forensics"),
+                    depends_on=("recon",),
+                    soft_depends_on=("threat_intel", "forensics"),
                     optional=True,
                     timeout_override=60,
                 ),
@@ -173,6 +188,7 @@ class Planner:
                     agent_name=spec.agent_name,
                     objective=self._objective_for_task(alert_type, spec.agent_name),
                     dependencies=[task_ids[dep] for dep in spec.depends_on],
+                    soft_dependencies=[task_ids[dep] for dep in spec.soft_depends_on],
                     optional=spec.optional,
                     max_retries=spec.max_retries,
                     timeout_override=spec.timeout_override,

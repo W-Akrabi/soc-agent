@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+from core.llm_response import LLMResponse
 from core.models import AlertType
 
 _DEFAULT_ALERT_TYPE = AlertType.INTRUSION.value
@@ -518,11 +519,13 @@ class MockLLMClient:
         self.model = "mock"
         self._alert_context: dict[str, str] | None = None
         self._event_log = None
+        self._dispatched: set[str] = set()
 
     def attach_event_log(self, event_log) -> None:
         self._event_log = event_log
 
     def set_alert_context(self, alert) -> None:
+        self._dispatched.clear()
         alert_type = _normalize_alert_type(getattr(alert, "type", None))
         self._alert_context = {
             "alert_type": alert_type,
@@ -548,7 +551,55 @@ class MockLLMClient:
         except (KeyError, ValueError):
             return template
 
-    async def call(self, system: str, messages: list[dict], tools: list[dict] = None, max_tokens: int = 4096) -> str:
+    def _should_mock_dispatch(self, role: str, alert_type: str, tools: list[dict] | None) -> bool:
+        if not tools or role in self._dispatched:
+            return False
+        if alert_type not in {"intrusion", "malware", "data_exfiltration"}:
+            return False
+        return role in {"recon", "threat_intel", "forensics", "remediation"}
+
+    def _mock_dispatch_call(self, role: str) -> dict | None:
+        mapping = {
+            "recon": {
+                "agent": "forensics",
+                "objective": "Analyse suspicious forensic artifact discovered during recon",
+                "context": {
+                    "artifact_type": "file_hash",
+                    "file_hash": "abc123",
+                    "source": "recon",
+                },
+            },
+            "threat_intel": {
+                "agent": "forensics",
+                "objective": "Corroborate campaign indicators against host evidence",
+                "context": {
+                    "campaign": "opportunistic exploit activity",
+                    "source": "threat_intel",
+                },
+            },
+            "forensics": {
+                "agent": "threat_intel",
+                "objective": "Attribute newly surfaced IOC from timeline reconstruction",
+                "context": {
+                    "indicator": self._context().get("source_ip") or "185.220.101.45",
+                    "source": "forensics",
+                },
+            },
+            "remediation": {
+                "agent": "recon",
+                "objective": "Confirm live host state before containment action",
+                "context": {
+                    "hostname": self._context().get("hostname"),
+                    "source": "remediation",
+                },
+            },
+        }
+        payload = mapping.get(role)
+        if payload is None:
+            return None
+        return {"id": f"mock-{role}-dispatch", "name": "dispatch_agent", "input": payload}
+
+    async def call(self, system: str, messages: list[dict], tools: list[dict] = None, max_tokens: int = 4096) -> LLMResponse:
         role = _system_role(system)
         alert_type = _normalize_alert_type(self._context().get("alert_type"))
         bucket = _RESPONSES.get(alert_type, _RESPONSES[_DEFAULT_ALERT_TYPE])
@@ -571,10 +622,16 @@ class MockLLMClient:
                     agent="llm",
                     data={"system_snippet": system[:120], "response_snippet": report[:120]},
                 )
-            return report
+            return LLMResponse(text=report, tool_calls=[])
 
         if role == "generic":
-            return "No findings."
+            return LLMResponse(text="No findings.", tool_calls=[])
+
+        if self._should_mock_dispatch(role, alert_type, tools):
+            tool_call = self._mock_dispatch_call(role)
+            if tool_call is not None:
+                self._dispatched.add(role)
+                return LLMResponse(text="", tool_calls=[tool_call])
 
         response = bucket.get(role)
         if response is None:
@@ -586,7 +643,7 @@ class MockLLMClient:
                 agent="llm",
                 data={"system_snippet": system[:120], "response_snippet": rendered[:120]},
             )
-        return rendered
+        return LLMResponse(text=rendered, tool_calls=[])
 
 
 class _SafeFormatDict(dict):

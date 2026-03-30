@@ -1,181 +1,162 @@
 # SOC Agent
 
-Terminal-first autonomous SOC investigation and response platform.
+Terminal-first SOC investigation and response orchestration.
 
-`soc-agent` is built to ingest normalized security alerts, plan and run specialist investigations, correlate against prior incidents, propose or gate containment actions, and preserve a replayable evidence trail. The product stance is deliberate: capability depth first, terminal UX first, web UI optional later.
+`soc-agent` ingests normalized alerts, builds a deterministic investigation plan, runs specialist agents, correlates against prior incidents, gates remediation actions behind policy and approvals, and preserves a replayable evidence trail.
 
-## Read This First
+## License and Commercial Use
 
-If you want the formal argument for what this repository actually proves about itself, read
-[`proof`](soc_agent.pdf) first.
+This repository is source-available under the PolyForm Noncommercial License 1.0.0. Commercial use is not allowed without separate written permission from the copyright holder.
 
-That document is the mathematical and logical correctness statement for the implemented control
-plane. It proves deterministic planning, dependency-safe scheduling, fail-closed remediation
-authorization, memory/correlation persistence properties, and replay correctness. It also states
-the boundary clearly: the repository does not and cannot formally prove universal real-world SOC
-detection accuracy from source code alone.
+That means this repository is **not** OSI-approved open source in its current form. If you want an OSI-approved release later, you will need to change the license before publishing it that way.
 
-## Contents
+See [LICENSE](LICENSE) for the repository terms.
 
-- [Read This First](#read-this-first)
-- [Overview](#overview)
-- [Platform Capabilities](#platform-capabilities)
-- [Architecture](#architecture)
-- [Quick Start](#quick-start)
-- [CLI Workflows](#cli-workflows)
-- [API Mode](#api-mode)
-- [Execution Controls](#execution-controls)
-- [Integrations](#integrations)
-- [Worker Model](#worker-model)
-- [Storage and State](#storage-and-state)
-- [Testing](#testing)
-- [Status](#status)
+## What Was Verified
 
-## Overview
+The repository was verified locally on March 30, 2026 with:
 
-`soc-agent` is a defensive security platform for:
+- `python3 main.py investigate simulated --dry-run`
+- `SOC_PROVIDER=ollama SOC_MODEL=qwen3:8b OLLAMA_BASE_URL=http://127.0.0.1:11434 python3 main.py investigate simulated`
+- `python3 -m pytest`
 
-- SOC automation
-- alert triage
-- investigation orchestration
-- cross-incident correlation
-- approval-gated containment
-- replay and post-incident analysis
+Current result:
 
-It is not a pentesting framework and it is not trying to be a generic chat wrapper around security tools. The target is a serious operator platform for security investigations, with explicit control over memory, policy, approvals, workers, and evidence.
+- `260 passed`
+- `8 skipped` for optional environment-specific checks such as PostgreSQL-backed paths
 
-## Platform Capabilities
+## Fastest First Run
 
-- Multi-provider model runtime:
-  - Anthropic
-  - OpenAI-compatible APIs
-  - Ollama
-- Deterministic planning:
-  - alert-type-specific task DAGs
-  - planner + scheduler execution
-  - retries, early-stop behavior, task dependency handling
-- Specialist agents:
-  - recon
-  - threat intel
-  - forensics
-  - remediation
-  - reporting
-- Shared investigation state:
-  - case graph
-  - append-only event log
-  - cross-incident memory
-  - approval queue
-  - worker queue
-- Terminal operations:
-  - investigate
-  - watch
-  - recall
-  - replay
-  - approve / reject / rollback
-  - worker management
-  - API server mode
-- Execution governance:
-  - allowlisted actions
-  - approval gating
-  - approver identity constraints
-  - rollback tracking
-- Observability:
-  - JSONL event logs
-  - Prometheus-style metrics endpoint
-  - JSON metrics endpoint
-- Remote worker support:
-  - delegated task execution
-  - lease timeout handling
-  - heartbeat tracking
-  - stale-task requeue helpers
-
-## Architecture
-
-```text
-Normalized Alert
-  -> Planner
-  -> Scheduler
-  -> Specialist Agents
-       -> Recon
-       -> Threat Intel
-       -> Forensics
-       -> Remediation
-       -> Reporter
-  -> Shared State
-       -> Case Graph
-       -> Event Log
-       -> Memory Store
-       -> Approval Queue
-       -> Worker Queue
-  -> Outputs
-       -> Incident Report
-       -> Replayable Run Metadata
-       -> Metrics
-       -> Optional API Responses
-```
-
-At runtime, the planner maps an alert into a task graph. The scheduler executes that graph locally or through remote workers. Agents write findings, evidence, and actions into shared storage. The report layer summarizes what actually happened in the graph, while memory and replay preserve the run for later analysis.
-
-## Quick Start
-
-### Requirements
-
-- Python 3.11+
-- `pip`
-- At least one model provider:
-  - Anthropic
-  - OpenAI-compatible endpoint
-  - Ollama
-
-### Setup
-
-1. Install dependencies:
+If you just want to confirm the project works, you do **not** need API keys. The dry-run path uses the built-in mock model provider.
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+cp .env.example .env
+python3 main.py investigate simulated --dry-run
 ```
 
-2. Create configuration:
+Expected outcome:
+
+- a terminal investigation run completes successfully
+- a markdown report is written under `./reports`
+- a case database is written under the path configured by `SOC_DB_PATH`
+- an event log is written if `SOC_EVENT_LOG_DIR` is set
+
+You can also confirm the full local test suite:
 
 ```bash
+python3 -m pytest
+```
+
+## Setup After Forking
+
+After forking and cloning the repository, every user should start the same way:
+
+```bash
+git clone <your-fork-url>
+cd soc-agent
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 cp .env.example .env
 ```
 
-3. Configure one provider:
+Then choose exactly one provider setup below.
 
-- `SOC_PROVIDER=anthropic` with `ANTHROPIC_API_KEY`
-- `SOC_PROVIDER=openai` with `OPENAI_API_KEY`
-- `SOC_PROVIDER=ollama` with a running Ollama server
+### Option 1: Anthropic
 
-4. Run a dry investigation:
+Edit `.env`:
+
+```dotenv
+SOC_PROVIDER=anthropic
+SOC_MODEL=claude-sonnet-4-6
+ANTHROPIC_API_KEY=your_key_here
+```
+
+Run:
+
+```bash
+python3 main.py investigate simulated
+```
+
+### Option 2: OpenAI-Compatible
+
+Edit `.env`:
+
+```dotenv
+SOC_PROVIDER=openai
+SOC_MODEL=gpt-4.1
+OPENAI_API_KEY=your_key_here
+OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+Run:
+
+```bash
+python3 main.py investigate simulated
+```
+
+### Option 3: Local Ollama
+
+Edit `.env`:
+
+```dotenv
+SOC_PROVIDER=ollama
+SOC_MODEL=qwen3:8b
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+```
+
+Start Ollama, then verify the local API:
+
+```bash
+ollama list
+curl http://127.0.0.1:11434/api/tags
+```
+
+If the desktop app is installed on macOS, opening `Ollama.app` is usually enough to start the local server.
+
+Run:
+
+```bash
+python3 main.py investigate simulated
+```
+
+If you only want a guaranteed local smoke test before configuring a live provider, use:
 
 ```bash
 python3 main.py investigate simulated --dry-run
 ```
 
-### Local Ollama Example
+## CLI Help
 
-If you want fully local inference:
+Top-level help now shows the subcommand interface:
 
 ```bash
-export SOC_PROVIDER=ollama
-export SOC_MODEL=llama3:latest
-python3 main.py investigate simulated --dry-run
+python3 main.py --help
+python3 main.py investigate --help
+python3 main.py worker --help
+python3 main.py api --help
 ```
 
-## CLI Workflows
+Legacy flag-based entry points still work, but the subcommand interface is the clearest starting point for new users.
 
-### Investigate
+## Common Workflows
+
+### Investigate One Alert
 
 ```bash
 python3 main.py investigate simulated --dry-run
-python3 main.py investigate alerts/sample_intrusion.json
-python3 main.py investigate alerts/sample_brute_force.json
+python3 main.py investigate alerts/sample_intrusion.json --dry-run
+python3 main.py investigate alerts/sample_brute_force.json --dry-run
+python3 main.py investigate alerts/sample_malware.json --dry-run
 ```
 
 ### Watch a Folder
 
 ```bash
+mkdir -p alerts/incoming
 python3 main.py watch alerts/incoming --dry-run
 ```
 
@@ -203,35 +184,13 @@ python3 main.py worker inspect --limit 25
 python3 main.py worker reap --lease-timeout 600
 ```
 
-### Legacy Entry Points
-
-The older flag-based interface remains available:
+### API Mode
 
 ```bash
-python3 main.py --alert simulated --dry-run
-python3 main.py --watch alerts/incoming
+python3 main.py api serve --dry-run
 ```
 
-## API Mode
-
-`soc-agent` can run as a lightweight authenticated API service using the same runtime configuration as the terminal workflows.
-
-### Start the API
-
-```bash
-python3 main.py api serve
-```
-
-### Core Settings
-
-- `SOC_API_HOST=127.0.0.1`
-- `SOC_API_PORT=8080`
-- `SOC_API_TOKEN=...`
-- `SOC_API_APPROVER_TOKEN=...`
-- `SOC_APPROVER_IDENTITIES=analyst1,analyst2`
-- `SOC_ENABLE_METRICS=true`
-
-### Available Surfaces
+Main endpoints:
 
 - `GET /health`
 - `GET /metrics`
@@ -239,37 +198,102 @@ python3 main.py api serve
 - `GET /api/approvals`
 - `POST /api/investigations`
 
-`GET /health` is intended for simple liveness checks. The authenticated surfaces use bearer-token gating.
+## Provider Setup
 
-## Execution Controls
+Dry-run mode does not need a provider. Live runs do.
 
-Containment is controlled through explicit policy flags rather than hidden agent behavior.
+### Anthropic
 
-### Core Controls
+```bash
+export SOC_PROVIDER=anthropic
+export ANTHROPIC_API_KEY=...
+export SOC_MODEL=claude-sonnet-4-6
+```
+
+### OpenAI-Compatible
+
+```bash
+export SOC_PROVIDER=openai
+export OPENAI_API_KEY=...
+export OPENAI_BASE_URL=https://api.openai.com/v1
+export SOC_MODEL=gpt-4.1
+```
+
+### Ollama
+
+```bash
+export SOC_PROVIDER=ollama
+export OLLAMA_BASE_URL=http://127.0.0.1:11434
+export SOC_MODEL=qwen3:8b
+python3 main.py investigate simulated
+```
+
+## Configuration
+
+Start from the checked-in example:
+
+```bash
+cp .env.example .env
+```
+
+Most important settings:
+
+- `SOC_PROVIDER=anthropic|openai|ollama`
+- `SOC_MODEL=...`
+- `ANTHROPIC_API_KEY=...`
+- `OPENAI_API_KEY=...`
+- `OPENAI_BASE_URL=...`
+- `OLLAMA_BASE_URL=http://127.0.0.1:11434`
+- `SOC_DB_PATH=./soc_cases.db`
+- `SOC_REPORTS_DIR=./reports`
+- `SOC_EVENT_LOG_DIR=./event_logs`
+- `SOC_AUTO_REMEDIATE=false`
+- `SOC_ENABLE_MEMORY=true`
+- `SOC_ENABLE_APPROVAL_QUEUE=true`
+- `SOC_WORKER_MODE=local|remote`
+- `SOC_STORAGE_BACKEND=sqlite|postgres`
+- `SOC_CONTROLPLANE_BACKEND=sqlite|postgres`
+
+## Execution Safety
+
+Containment and write-capable integrations are fail-closed by default.
+
+Important controls:
 
 - `SOC_ALLOW_INTEGRATION_EXECUTION=true`
-  - enables execution policy evaluation
 - `SOC_ALLOWED_ACTIONS=isolate_host,disable_account,...`
-  - allowlists write-capable actions
 - `SOC_AUTO_REMEDIATE=true|false`
-  - controls whether approved actions auto-execute or wait for review
-- `SOC_APPROVER_IDENTITIES=...`
-  - constrains who may approve, reject, or roll back actions
+- `SOC_APPROVER_IDENTITIES=analyst1,analyst2`
 - `SOC_API_APPROVER_TOKEN=...`
-  - adds a second gate for approval-changing CLI and API operations
+- `SOC_ALLOW_LIVE_INTEGRATIONS=true`
+- `SOC_ALLOW_WRITE_INTEGRATIONS=false`
 
-### Expected Action States
+In `--dry-run`, the integration registry is disabled and external write paths are not exercised.
 
-- `proposed`
-- `awaiting_approval`
-- `approved`
-- `executing`
-- `executed`
-- `rejected`
-- `failed`
-- `rolled_back`
+## Architecture at a Glance
 
-The default operational posture is conservative: propose actions broadly, require explicit approval where policy says so, and only execute when the runtime, allowlist, and adapter support all line up.
+```text
+Normalized Alert
+  -> Planner
+  -> Scheduler
+  -> Specialist Agents
+       -> Recon
+       -> Threat Intel
+       -> Forensics
+       -> Remediation
+       -> Reporter
+  -> Shared State
+       -> Case Graph
+       -> Event Log
+       -> Memory Store
+       -> Approval Queue
+       -> Worker Queue
+  -> Outputs
+       -> Incident Report
+       -> Replayable Run Metadata
+       -> Metrics
+       -> Optional API Responses
+```
 
 ## Integrations
 
@@ -280,36 +304,7 @@ Current first-wave integrations:
 - Entra
 - Threat intel
 
-These adapters support normalized evidence collection, and where applicable, gated write execution through the remediation path.
-
-### Notes
-
-- In `--dry-run`, the integration registry is disabled and external write paths are not exercised.
-- Approval queue items appear only when an action is:
-  - supported by policy
-  - allowlisted
-  - backed by a write-capable adapter
-  - not auto-executed immediately
-
-## Worker Model
-
-Remote workers allow investigations to dispatch planned tasks into a separate queue-backed execution path.
-
-### Worker Controls
-
-- `SOC_WORKER_MODE=local|remote`
-- `SOC_WORKER_POLL_INTERVAL=1.0`
-- `SOC_WORKER_LEASE_TIMEOUT=600`
-- `SOC_WORKER_HEARTBEAT_INTERVAL=15.0`
-
-### Operational Behavior
-
-- queued tasks can be claimed by a worker
-- workers emit heartbeats while active
-- stale claimed or running tasks can be requeued
-- inspection surfaces expose queue state and age
-
-This is intended to support a more distributed execution model without changing the operator workflow.
+These adapters support normalized evidence collection and, where enabled by policy, gated remediation execution.
 
 ## Storage and State
 
@@ -321,47 +316,37 @@ This is intended to support a more distributed execution model without changing 
 
 ### Control Plane
 
-Memory, approvals, and worker queues can use either SQLite or PostgreSQL:
-
 - `SOC_CONTROLPLANE_BACKEND=sqlite|postgres`
 - `SOC_CONTROLPLANE_POSTGRES_DSN=postgresql://...`
 - `SOC_CONTROLPLANE_POSTGRES_SCHEMA=soc_control`
 
-### Additional State
+### Additional Files
 
-- `SOC_EVENT_LOG_DIR=...`
-- `SOC_MEMORY_DB_PATH=...`
-- `SOC_APPROVAL_DB_PATH=...`
-- `SOC_WORKER_DB_PATH=...`
+- `SOC_MEMORY_DB_PATH=./soc_memory.db`
+- `SOC_APPROVAL_DB_PATH=./soc_approvals.db`
+- `SOC_WORKER_DB_PATH=./soc_workers.db`
+- `SOC_EVENT_LOG_DIR=./event_logs`
 
-SQLite remains the default for simple local use. PostgreSQL support exists both for the investigation store and the stateful control-plane services.
+SQLite is the default and is the easiest way to run locally.
 
 ## Testing
 
 Run the main local suite with:
 
 ```bash
-pytest tests/ -q
+python3 -m pytest
 ```
 
 Optional live or environment-specific checks:
 
 ```bash
-pytest tests/test_integration.py -v -s
+python3 -m pytest tests/test_integration.py -v -s
 ```
 
 PostgreSQL-specific tests are enabled when `SOC_TEST_POSTGRES_DSN` is set.
 
-## Status
+## Proof and Design Notes
 
-`soc-agent` is materially beyond an MVP. It now has a real model abstraction layer, planning and scheduling, shared state, memory and replay, remote worker support, approval gating, API mode, and metrics.
+If you want the formal repository-level correctness statement, read [soc_agent.pdf](soc_agent.pdf).
 
-It is still not at finished enterprise-production maturity. The biggest remaining gaps are:
-
-- stronger secret-management posture
-- deeper isolated execution and sandboxing
-- broader deployment hardening
-- richer enterprise auth and policy depth
-- broader integration surface
-
-That said, the platform is now operational enough to run real terminal-first investigations, exercise policy-gated actions, and validate the control plane end to end.
+That document covers the implemented control plane properties, including deterministic planning, dependency-safe scheduling, fail-closed remediation authorization, persistence, and replay boundaries.

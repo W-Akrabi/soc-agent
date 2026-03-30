@@ -9,7 +9,11 @@ from integrations.threat_intel import ThreatIntelAdapter, evidence_record_to_dic
 SYSTEM_PROMPT = """You are a Threat Intelligence Analyst in a SOC investigation.
 Given the Case Graph findings (IPs, ports, domains), look up CVEs and threat feeds.
 Identify what threat actor or campaign this may be associated with.
-Respond with a 2-3 sentence threat assessment."""
+Respond with a 2-3 sentence threat assessment.
+
+If threat feeds confirm an active campaign and you need endpoint evidence to corroborate it,
+use dispatch_agent to request forensics analysis with the campaign IOCs as context.
+Only dispatch when intelligence findings require validation against host evidence."""
 
 
 class ThreatIntelAgent(AgentBase):
@@ -90,11 +94,21 @@ class ThreatIntelAgent(AgentBase):
             f"CVEs found: {json.dumps(cve_findings)}\n"
             f"Evidence: {json.dumps(evidence_findings)}"
         )
-        assessment = await self.llm.call(system=SYSTEM_PROMPT, messages=[{"role": "user", "content": context}])
+        assessment = await self._llm_call_with_dispatch(
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": context}],
+        )
 
         self.graph.write_node(
             type="finding", label=f"intel-assessment-{alert.id}",
             data={"assessment": assessment, "cves": cve_findings, "evidence": evidence_findings},
             created_by=self.name
         )
+        if self.dispatch_context is not None:
+            self.graph.write_node(
+                type="finding",
+                label=f"dispatch-summary:threat_intel:{task_node_id}",
+                data={"summary": assessment},
+                created_by=self.name,
+            )
         self.log(assessment[:120] + "..." if len(assessment) > 120 else assessment)

@@ -109,6 +109,50 @@ async def test_commander_timeout_runs_reporter_with_available_data(graph, consol
 
 
 @pytest.mark.asyncio
+async def test_commander_runs_fallback_reporter_when_planned_reporter_does_not_complete(graph, console, tmp_path):
+    alert = _make_alert()
+    llm = MagicMock()
+    llm.call = AsyncMock(return_value='{"objective":"Investigate","priority_agents":["recon"]}')
+
+    plan = InvestigationPlan(
+        plan_id="plan-no-report",
+        alert_id=alert.id,
+        alert_type=alert.type.value,
+        objective="Investigate",
+        tasks=[
+            PlannedTask(task_id="intrusion:recon", agent_name="recon", objective="Gather"),
+            PlannedTask(
+                task_id="intrusion:reporter",
+                agent_name="reporter",
+                objective="Summarize",
+                dependencies=["intrusion:recon"],
+            ),
+        ],
+    )
+    planner = MagicMock()
+    planner.build_plan.return_value = plan
+    scheduler = MagicMock()
+    scheduler.attach_event_log = MagicMock()
+    scheduler.run = AsyncMock(return_value=None)
+
+    commander = Commander(
+        case_graph=graph,
+        llm=llm,
+        console=console,
+        planner=planner,
+        scheduler=scheduler,
+        reports_dir=str(tmp_path),
+    )
+
+    with patch("agents.commander.ReporterAgent.run", new=AsyncMock()) as reporter_run:
+        await commander.investigate(alert)
+
+    reporter_run.assert_awaited()
+    task_nodes = graph.get_nodes_by_type("task")
+    assert any(node["label"] == "reporter-task" for node in task_nodes)
+
+
+@pytest.mark.asyncio
 async def test_remote_task_runner_uses_scoped_queue_task_id(console):
     alert = _make_alert()
     graph = MagicMock()

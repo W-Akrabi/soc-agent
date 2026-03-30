@@ -1,6 +1,8 @@
 import asyncio
 import anthropic
 
+from core.llm_response import LLMResponse
+
 
 class LLMError(Exception):
     pass
@@ -21,7 +23,7 @@ class LLMClient:
         messages: list[dict],
         tools: list[dict] = None,
         max_tokens: int = 4096,
-    ) -> str:
+    ) -> LLMResponse:
         kwargs = dict(
             model=self.model,
             max_tokens=max_tokens,
@@ -35,26 +37,32 @@ class LLMClient:
         for attempt in range(2):
             try:
                 response = await self._client.messages.create(**kwargs)
+                text_parts: list[str] = []
+                tool_calls: list[dict] = []
                 for block in response.content:
-                    if hasattr(block, "text"):
-                        result = block.text
-                        if self._event_log is not None:
-                            self._event_log.append(
-                                "llm_call",
-                                agent="llm",
-                                data={
-                                    "system_snippet": system[:120],
-                                    "response_snippet": result[:120],
-                                },
-                            )
-                        return result
+                    block_type = getattr(block, "type", None)
+                    if block_type == "tool_use":
+                        tool_calls.append(
+                            {
+                                "id": getattr(block, "id", ""),
+                                "name": getattr(block, "name", ""),
+                                "input": getattr(block, "input", {}),
+                            }
+                        )
+                        continue
+                    if hasattr(block, "text") and block.text:
+                        text_parts.append(block.text)
+                result = "".join(text_parts)
                 if self._event_log is not None:
                     self._event_log.append(
                         "llm_call",
                         agent="llm",
-                        data={"system_snippet": system[:120], "response_snippet": ""},
+                        data={
+                            "system_snippet": system[:120],
+                            "response_snippet": result[:120],
+                        },
                     )
-                return ""
+                return LLMResponse(text=result, tool_calls=tool_calls)
             except Exception as e:
                 last_error = e
                 if attempt == 0:

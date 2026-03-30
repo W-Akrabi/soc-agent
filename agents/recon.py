@@ -12,7 +12,12 @@ SYSTEM_PROMPT = """You are a Reconnaissance Specialist in a SOC investigation.
 You have access to IP lookup, WHOIS, and port scan tools.
 Given an alert, gather all available information about the involved IPs, domains, hostnames.
 Think step by step. Use tools in order: IP lookup → WHOIS → port scan.
-Summarize what you found in 2-3 sentences."""
+Summarize what you found in 2-3 sentences.
+
+If you discover a file hash, malware sample, or forensic artifact, use dispatch_agent to
+request forensics analysis with the specific artifact as context. If you find a suspicious
+IP with no clear attribution, use dispatch_agent to request threat_intel analysis.
+Only dispatch when you have a specific concrete IOC, not as a general enrichment step."""
 
 
 class ReconAgent(AgentBase):
@@ -127,11 +132,21 @@ class ReconAgent(AgentBase):
             findings["defender"] = defender_findings
 
         user_msg = f"Alert: {json.dumps({'type': alert.type.value, 'severity': alert.severity.value, 'source_ip': alert.source_ip, 'dest_ip': alert.dest_ip, 'hostname': alert.hostname})}\n\nTool findings: {json.dumps(findings)}"
-        summary = await self.llm.call(system=SYSTEM_PROMPT, messages=[{"role": "user", "content": user_msg}])
+        summary = await self._llm_call_with_dispatch(
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_msg}],
+        )
 
         self.graph.write_node(
             type="finding", label=f"recon-summary-{alert.id}",
             data={"summary": summary, "raw_findings": findings},
             created_by=self.name
         )
+        if self.dispatch_context is not None:
+            self.graph.write_node(
+                type="finding",
+                label=f"dispatch-summary:recon:{task_node_id}",
+                data={"summary": summary},
+                created_by=self.name,
+            )
         self.log(summary[:120] + "..." if len(summary) > 120 else summary)

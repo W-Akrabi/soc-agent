@@ -79,7 +79,11 @@ class Scheduler:
                         remaining.pop(task.task_id, None)
                     continue
 
-            ready = [task for task in remaining.values() if self._deps_satisfied(task, completed, skipped)]
+            ready = [
+                task
+                for task in remaining.values()
+                if self._deps_satisfied(task, completed, skipped, failed, blocked)
+            ]
             if not ready:
                 raise ValueError("Plan contains unsatisfiable or cyclic dependencies")
 
@@ -136,7 +140,7 @@ class Scheduler:
 
         attempts = 0
         last_error: str | None = None
-        timeout = task.timeout_override or self.default_timeout
+        timeout = max(task.timeout_override or 0, self.default_timeout) + 5.0
 
         while True:
             attempts += 1
@@ -164,7 +168,7 @@ class Scheduler:
             except asyncio.TimeoutError:
                 last_error = f"timed out after {timeout}s"
             except Exception as e:
-                last_error = str(e)
+                last_error = self._format_exception(e)
 
             if attempts > task.max_retries:
                 return TaskExecutionResult(
@@ -185,6 +189,12 @@ class Scheduler:
                 },
             )
 
+    def _format_exception(self, exc: Exception) -> str:
+        message = str(exc).strip()
+        if message:
+            return message
+        return f"{type(exc).__name__}()"
+
     async def _invoke_runner(self, runner: Any, task: PlannedTask) -> Any:
         candidate = None
         if callable(runner):
@@ -203,8 +213,17 @@ class Scheduler:
         task: PlannedTask,
         completed: set[str],
         skipped: set[str],
+        failed: set[str] | None = None,
+        blocked: set[str] | None = None,
     ) -> bool:
-        return all(dep in completed or dep in skipped for dep in task.dependencies)
+        failed = failed or set()
+        blocked = blocked or set()
+        hard_ready = all(dep in completed or dep in skipped for dep in task.dependencies)
+        soft_ready = all(
+            dep in completed or dep in skipped or dep in failed or dep in blocked
+            for dep in task.soft_dependencies
+        )
+        return hard_ready and soft_ready
 
     def _block_unreachable_tasks(
         self,

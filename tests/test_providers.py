@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from core.config import Config
+from core.dispatch import DISPATCH_TOOL_SCHEMA
 from core.providers import build_provider
 from core.providers.anthropic_provider import AnthropicProvider
 from core.providers.openai_provider import OpenAIProvider
@@ -33,7 +35,7 @@ def _base_config(**overrides) -> Config:
         provider="anthropic",
         openai_api_key="openai-key",
         openai_base_url="https://api.openai.com/v1",
-        ollama_base_url="http://localhost:11434",
+        ollama_base_url="http://127.0.0.1:11434",
     )
     return replace(config, **overrides)
 
@@ -117,8 +119,46 @@ async def test_openai_provider_posts_chat_completions_and_emits_event_log():
 
 
 @pytest.mark.asyncio
+async def test_openai_provider_translates_internal_tool_schema():
+    provider = OpenAIProvider(api_key="openai-key", model="gpt-test", base_url="https://example.com/v1")
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "openai result"}}]}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["json"] = json
+            return FakeResponse()
+
+    with patch("core.providers.openai_provider.httpx.AsyncClient", FakeClient):
+        await provider.call(
+            system="system prompt",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[DISPATCH_TOOL_SCHEMA],
+        )
+
+    assert captured["json"]["tools"][0]["type"] == "function"
+    assert captured["json"]["tools"][0]["function"]["name"] == "dispatch_agent"
+    assert captured["json"]["tools"][0]["function"]["parameters"]["type"] == "object"
+
+
+@pytest.mark.asyncio
 async def test_ollama_provider_posts_chat_endpoint_and_emits_event_log():
-    provider = OllamaProvider(model="llama3", base_url="http://localhost:11434/")
+    provider = OllamaProvider(model="llama3", base_url="http://127.0.0.1:11434/")
     log = DummyEventLog()
     provider.attach_event_log(log)
 
@@ -150,7 +190,71 @@ async def test_ollama_provider_posts_chat_endpoint_and_emits_event_log():
         result = await provider.call(system="system prompt", messages=[{"role": "user", "content": "hi"}])
 
     assert result == "ollama result"
-    assert captured["url"] == "http://localhost:11434/api/chat"
+    assert captured["url"] == "http://127.0.0.1:11434/api/chat"
+    assert captured["timeout"] == 180.0
     assert captured["json"]["model"] == "llama3"
     assert captured["json"]["messages"][0]["role"] == "system"
     assert log.entries[0]["event_type"] == "llm_call"
+
+
+@pytest.mark.asyncio
+async def test_ollama_provider_translates_internal_tool_schema():
+    provider = OllamaProvider(model="llama3", base_url="http://127.0.0.1:11434/")
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"message": {"content": "ollama result"}}
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None):
+            captured["json"] = json
+            return FakeResponse()
+
+    with patch("core.providers.ollama_provider.httpx.AsyncClient", FakeClient):
+        await provider.call(
+            system="system prompt",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[DISPATCH_TOOL_SCHEMA],
+        )
+
+    assert captured["json"]["tools"][0]["type"] == "function"
+    assert captured["json"]["tools"][0]["function"]["name"] == "dispatch_agent"
+    assert captured["json"]["tools"][0]["function"]["parameters"]["type"] == "object"
+
+
+@pytest.mark.asyncio
+async def test_ollama_provider_raises_clear_error_on_connection_failure():
+    provider = OllamaProvider(model="llama3", base_url="http://127.0.0.1:11434")
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None):
+            raise httpx.ConnectError("boom")
+
+    with patch("core.providers.ollama_provider.httpx.AsyncClient", FakeClient):
+        with pytest.raises(RuntimeError, match="Could not connect to Ollama"):
+            await provider.call(
+                system="system prompt",
+                messages=[{"role": "user", "content": "hi"}],
+            )

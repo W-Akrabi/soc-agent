@@ -40,7 +40,11 @@ def test_for_dry_run_does_not_require_api_key():
 
 
 def test_for_dry_run_defaults_match_from_env_defaults():
-    env = {k: v for k, v in os.environ.items() if not k.startswith("SOC_") and k != "ANTHROPIC_API_KEY"}
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("SOC_") and k not in {"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OLLAMA_BASE_URL"}
+    }
     with patch.dict(os.environ, env, clear=True):
         config = Config.for_dry_run()
     assert config.db_path == "./soc_cases.db"
@@ -52,6 +56,7 @@ def test_for_dry_run_defaults_match_from_env_defaults():
     assert config.worker_mode == "local"
     assert config.worker_lease_timeout == 600
     assert config.worker_heartbeat_interval == 15.0
+    assert config.ollama_base_url == "http://127.0.0.1:11434"
 
 
 def test_for_dry_run_uses_soc_event_log_dir():

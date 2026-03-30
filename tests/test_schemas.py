@@ -211,17 +211,59 @@ def test_validate_action_proposals_happy_path():
     assert proposals[0].target == "1.2.3.4"
 
 
-def test_validate_action_proposals_rejects_non_array():
-    with pytest.raises(ValueError, match="JSON array"):
+def test_validate_action_proposals_rejects_unsalvageable_single_object():
+    with pytest.raises(ValueError, match="No valid action proposals"):
         validate_action_proposals('{"action_type": "block_ip"}')
 
 
 def test_validate_action_proposals_rejects_missing_field():
     raw = '[{"action_type": "block_ip", "target": "1.2.3.4", "urgency": "immediate"}]'
-    with pytest.raises(ValueError, match="reason"):
-        validate_action_proposals(raw)
+    proposals = validate_action_proposals(raw)
+    assert len(proposals) == 1
+    assert proposals[0].reason.startswith("Model proposed block_ip")
 
 
 def test_validate_action_proposals_rejects_invalid_json():
     with pytest.raises(ValueError, match="invalid"):
         validate_action_proposals("not json at all")
+
+
+def test_validate_action_proposals_accepts_markdown_fenced_json():
+    raw = """```json
+    [
+      {"action_type": "isolate_host", "target": "workstation-14", "reason": "possible malware", "urgency": "urgent"}
+    ]
+    ```"""
+    proposals = validate_action_proposals(raw)
+    assert len(proposals) == 1
+    assert proposals[0].urgency == "immediate"
+
+
+def test_validate_action_proposals_accepts_wrapper_object():
+    raw = (
+        '{"actions":[{"action":"disable_account","account":"jdoe",'
+        '"description":"credential misuse risk","priority":"today"}]}'
+    )
+    proposals = validate_action_proposals(raw)
+    assert len(proposals) == 1
+    assert proposals[0].action_type == "disable_account"
+    assert proposals[0].target == "jdoe"
+    assert proposals[0].urgency == "within_24h"
+
+
+def test_validate_action_proposals_skips_invalid_items_when_some_are_salvageable():
+    raw = (
+        '['
+        '{"action_type":"block_ip","target":"1.2.3.4","reason":"scanner","urgency":"immediate"},'
+        '{"foo":"bar"}'
+        ']'
+    )
+    proposals = validate_action_proposals(raw)
+    assert len(proposals) == 1
+    assert proposals[0].target == "1.2.3.4"
+
+
+def test_validate_action_proposals_rejects_when_no_items_salvageable():
+    raw = '[{"foo":"bar"}]'
+    with pytest.raises(ValueError, match="No valid action proposals"):
+        validate_action_proposals(raw)

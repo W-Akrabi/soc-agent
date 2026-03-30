@@ -40,7 +40,11 @@ def test_intrusion_plan_builds_expected_dag():
     assert tasks["recon"].dependencies == []
     assert tasks["threat_intel"].dependencies == [tasks["recon"].task_id]
     assert tasks["forensics"].dependencies == [tasks["recon"].task_id]
-    assert tasks["remediation"].dependencies == [tasks["threat_intel"].task_id, tasks["forensics"].task_id]
+    assert tasks["remediation"].dependencies == [tasks["recon"].task_id]
+    assert tasks["remediation"].soft_dependencies == [
+        tasks["threat_intel"].task_id,
+        tasks["forensics"].task_id,
+    ]
     assert tasks["reporter"].dependencies == [
         tasks["recon"].task_id,
         tasks["threat_intel"].task_id,
@@ -62,7 +66,11 @@ def test_brute_force_plan_marks_remediation_optional():
 
     assert plan.alert_type == "brute_force"
     assert tasks["remediation"].optional is True
-    assert tasks["remediation"].dependencies == [tasks["threat_intel"].task_id, tasks["forensics"].task_id]
+    assert tasks["remediation"].dependencies == [tasks["recon"].task_id]
+    assert tasks["remediation"].soft_dependencies == [
+        tasks["threat_intel"].task_id,
+        tasks["forensics"].task_id,
+    ]
     assert tasks["reporter"].dependencies[-1] == tasks["remediation"].task_id
     assert plan.early_stop_threshold == 0.80
 
@@ -76,7 +84,11 @@ def test_malware_plan_keeps_remediation_mandatory():
 
     assert plan.alert_type == "malware"
     assert tasks["remediation"].optional is False
-    assert tasks["remediation"].dependencies == [tasks["threat_intel"].task_id, tasks["forensics"].task_id]
+    assert tasks["remediation"].dependencies == [tasks["recon"].task_id]
+    assert tasks["remediation"].soft_dependencies == [
+        tasks["threat_intel"].task_id,
+        tasks["forensics"].task_id,
+    ]
     assert plan.early_stop_threshold == 0.95
 
 

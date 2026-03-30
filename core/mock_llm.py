@@ -258,7 +258,7 @@ behavior. Immediate isolation is recommended.
         "reporter": """\
 # Incident Report
 
-**Severity:** 🟠 MEDIUM
+**Severity:** {severity_badge}
 **Alert ID:** {alert_id}
 **Timestamp:** {timestamp}
 **Investigation Status:** Complete
@@ -278,7 +278,7 @@ available data.
 | Field | Value |
 |---|---|
 | Type | BRUTE_FORCE |
-| Severity | MEDIUM |
+| Severity | {severity_upper} |
 | Source IP | 203.0.113.99 |
 | Destination | 10.0.0.10:22 (bastion-01) |
 | Account | admin |
@@ -530,6 +530,7 @@ class MockLLMClient:
         self._alert_context = {
             "alert_type": alert_type,
             "alert_id": getattr(alert, "id", "dry-run"),
+            "severity": getattr(getattr(alert, "severity", None), "value", getattr(alert, "severity", "")) or "",
             "source_ip": getattr(alert, "source_ip", None) or "",
             "dest_ip": getattr(alert, "dest_ip", None) or "",
             "hostname": getattr(alert, "hostname", None) or "",
@@ -542,12 +543,36 @@ class MockLLMClient:
     def _context(self) -> dict[str, str]:
         return self._alert_context or {"alert_type": _DEFAULT_ALERT_TYPE}
 
+    def _report_format_context(self) -> dict[str, str]:
+        context = dict(self._context())
+        severity = str(context.get("severity") or "low").strip().lower() or "low"
+        context["severity_upper"] = severity.upper()
+        context["severity_badge"] = {
+            "low": "🟡 LOW",
+            "medium": "🟠 MEDIUM",
+            "high": "🔴 HIGH",
+            "critical": "🚨 CRITICAL",
+        }.get(severity, severity.upper())
+        return context
+
     def _render(self, template: str) -> str:
-        placeholders = ("{source_ip}", "{dest_ip}", "{hostname}", "{user_account}", "{alert_id}", "{dest_port}", "{process}", "{timestamp}")
+        placeholders = (
+            "{source_ip}",
+            "{dest_ip}",
+            "{hostname}",
+            "{user_account}",
+            "{alert_id}",
+            "{dest_port}",
+            "{process}",
+            "{timestamp}",
+            "{severity}",
+            "{severity_upper}",
+            "{severity_badge}",
+        )
         if not any(token in template for token in placeholders):
             return template
         try:
-            return template.format_map(_SafeFormatDict(self._context()))
+            return template.format_map(_SafeFormatDict(self._report_format_context()))
         except (KeyError, ValueError):
             return template
 
@@ -615,7 +640,15 @@ class MockLLMClient:
                     alert_type = _normalize_alert_type(data.get("alert_type", alert_type))
                 except Exception:
                     pass
-            report = bucket["reporter"].format(alert_id=alert_id, timestamp=ts)
+            report = bucket["reporter"].format_map(
+                _SafeFormatDict(
+                    {
+                        **self._report_format_context(),
+                        "alert_id": alert_id,
+                        "timestamp": ts,
+                    }
+                )
+            )
             if self._event_log is not None:
                 self._event_log.append(
                     "llm_call",

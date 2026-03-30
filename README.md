@@ -18,11 +18,12 @@ The repository was verified locally on March 30, 2026 with:
 
 - `python3 main.py investigate simulated --dry-run`
 - `SOC_PROVIDER=ollama SOC_MODEL=qwen3:8b OLLAMA_BASE_URL=http://127.0.0.1:11434 python3 main.py investigate simulated`
+- `python3 main.py detect ssh-bruteforce --log-file <auth.log> --threshold 3 --from-start --once --dry-run`
 - `python3 -m pytest`
 
 Current result:
 
-- `260 passed`
+- `264 passed`
 - `8 skipped` for optional environment-specific checks such as PostgreSQL-backed paths
 
 ## Fastest First Run
@@ -159,6 +160,41 @@ python3 main.py investigate alerts/sample_malware.json --dry-run
 mkdir -p alerts/incoming
 python3 main.py watch alerts/incoming --dry-run
 ```
+
+### Detect and Investigate Automatically
+
+The new detector mode keeps the existing investigation and remediation pipeline intact, but adds a built-in always-on detector in front of it.
+
+Current built-in detector:
+
+- `ssh-bruteforce`
+
+Example:
+
+```bash
+python3 main.py detect ssh-bruteforce --log-file /var/log/auth.log
+```
+
+Useful flags:
+
+```bash
+python3 main.py detect ssh-bruteforce --log-file /var/log/auth.log --threshold 5 --window 300
+python3 main.py detect ssh-bruteforce --log-file /var/log/auth.log --from-start --once --dry-run
+```
+
+Behavior:
+
+- tails the log file continuously
+- groups repeated failed SSH logins by source IP and user
+- emits a normalized `brute_force` alert when the threshold is met
+- hands that alert into the existing `run_investigation()` flow
+- preserves the same reports, memory, approvals, and remediation logic already used by file/API-triggered investigations
+
+Notes:
+
+- the first detector is Linux-auth-log oriented; common default path is `/var/log/auth.log`
+- some systems use `/var/log/secure` instead
+- reading system auth logs may require elevated privileges depending on the machine
 
 ### Recall and Replay
 

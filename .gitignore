@@ -20,3 +20,4 @@ alerts/incoming/processed/
 
 # OS/editor noise
 .DS_Store
+tests/

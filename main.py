@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-SUBCOMMANDS = {"investigate", "watch", "recall", "replay", "approve", "reject", "rollback", "worker", "api"}
+SUBCOMMANDS = {"investigate", "watch", "detect", "recall", "replay", "approve", "reject", "rollback", "worker", "api"}
 HELP_FLAGS = {"-h", "--help"}
 HELP_EPILOG = """Legacy entry points still work:
   python3 main.py --alert simulated --dry-run
@@ -87,6 +87,25 @@ def _main_subcommands(argv: list[str]) -> None:
     watch.add_argument("--timeout", type=int, default=None)
     watch.add_argument("--dry-run", action="store_true", default=False)
 
+    detect = subparsers.add_parser("detect", help="Run built-in detectors against live telemetry")
+    detect_subparsers = detect.add_subparsers(dest="detect_command", required=True)
+
+    detect_ssh = detect_subparsers.add_parser(
+        "ssh-bruteforce",
+        help="Monitor SSH authentication logs and trigger investigations on repeated failures",
+    )
+    detect_ssh.add_argument("--log-file", default="/var/log/auth.log")
+    detect_ssh.add_argument("--threshold", type=int, default=5)
+    detect_ssh.add_argument("--window", type=int, default=300)
+    detect_ssh.add_argument("--cooldown", type=int, default=900)
+    detect_ssh.add_argument("--poll-interval", type=float, default=2.0)
+    detect_ssh.add_argument("--hostname", default=None)
+    detect_ssh.add_argument("--from-start", action="store_true", default=False)
+    detect_ssh.add_argument("--once", action="store_true", default=False)
+    detect_ssh.add_argument("--auto-remediate", action="store_true", default=False)
+    detect_ssh.add_argument("--timeout", type=int, default=None)
+    detect_ssh.add_argument("--dry-run", action="store_true", default=False)
+
     recall = subparsers.add_parser("recall", help="Recall prior incidents for an entity")
     recall.add_argument("entity", help="Entity value to search for")
     recall.add_argument("--limit", type=int, default=5)
@@ -147,6 +166,16 @@ def _main_subcommands(argv: list[str]) -> None:
         config = _load_config_for_execution(args.dry_run)
         try:
             asyncio.run(_run_watch(args.watch_dir, config, args))
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            pass
+        return
+
+    if args.command == "detect":
+        config = _load_config_for_execution(args.dry_run)
+        if args.auto_remediate:
+            config = replace(config, auto_remediate=True)
+        try:
+            asyncio.run(_run_detect(config, args))
         except (KeyboardInterrupt, asyncio.CancelledError):
             pass
         return
@@ -245,6 +274,37 @@ async def _run_watch(watch_dir: str, config, args) -> None:
         commander_timeout_override=args.timeout,
         console=console,
     )
+
+
+async def _run_detect(config, args) -> None:
+    from rich.console import Console
+
+    from core.app import run_investigation
+    from ingestion.detectors.registry import build_detector
+
+    console = Console()
+    detector = build_detector(args)
+    console.print(
+        f"[green]Detector[/green] {detector.name} watching "
+        f"{getattr(detector, 'log_path', 'configured source')}"
+    )
+
+    async for alert in detector.watch(run_once=getattr(args, "once", False)):
+        console.rule(
+            f"[bold]DETECTED[/bold]  │  {alert.type.value.upper()}  │  {alert.severity.value.upper()}  │  "
+            f"{alert.source_ip or '-'}"
+        )
+        try:
+            await run_investigation(
+                config=config,
+                alert=alert,
+                dry_run=args.dry_run,
+                event_log_dir=config.event_log_dir,
+                commander_timeout_override=getattr(args, "timeout", None),
+                console=console,
+            )
+        except Exception as exc:
+            console.print(f"[red]Detector-triggered investigation failed:[/red] {exc}")
 
 
 def _handle_recall(args) -> None:
